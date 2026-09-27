@@ -247,9 +247,9 @@ def main():
             )
             return json.loads(base64.b64decode(result["Body"]))
 
-        def configure(mode, method="plugin.reconfigure"):
+        def configure(mode, method="plugin.reconfigure", policy="weekly_reset_first"):
             payload = {
-                "config_yaml": base64.b64encode(("mode: " + mode).encode()).decode()
+                "config_yaml": base64.b64encode(("selection_policy: " + policy + "\nmode: " + mode).encode()).decode()
             }
             reg = call(method, payload)
             assert reg["schema_version"] == 6
@@ -286,7 +286,7 @@ def main():
             ],
         }
         configure("shadow", "plugin.register")
-        assert status()["version"] == "0.2.1"
+        assert status()["version"] == "0.3.0"
         assert status()["selection_policy"] == "weekly_reset_first"
         assert not call("scheduler.pick", request)["Handled"]
         assert status()["last_decision"]["auth_id"] == "z-five-hours"
@@ -327,6 +327,18 @@ def main():
         assert all(
             p not in json.dumps(status()) for p in ("test-token-", "codex-token-")
         )
+        exhausted.clear()
+        for account in ids:
+            durations[account] = 72
+        configure("active", policy="quota_balanced")
+        balanced_counts = {}
+        for _ in range(400):
+            picked = call("scheduler.pick", request)["AuthID"]
+            balanced_counts[picked] = balanced_counts.get(picked, 0) + 1
+        assert len(balanced_counts) == len(claude_ids), balanced_counts
+        assert max(balanced_counts.values()) - min(balanced_counts.values()) <= 2, balanced_counts
+        assert status()["selection_policy"] == "quota_balanced"
+        assert len(status()["last_decision"]["traffic_shares"]) == len(claude_ids)
         call("plugin.quiesce", {})
         assert not call("scheduler.pick", request)["Handled"]
         api.shutdown()
@@ -336,7 +348,7 @@ def main():
         assert len(upstream_requests) >= 16, upstream_requests
         server.shutdown()
         print(
-            "PASS: release .so native ABI, TLS quota reads, shadow/active routing, reset rollover, exhaustion, 500 picks, quiesce, buffer ownership; no host writes"
+            "PASS: release .so native ABI, TLS quota reads, legacy and balanced routing, reset rollover, exhaustion, 900 picks, quiesce, buffer ownership; no host writes"
         )
 
 

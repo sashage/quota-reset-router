@@ -284,6 +284,7 @@ plugins:
       enabled: true
       priority: 10
       mode: shadow
+      selection_policy: weekly_reset_first
 """)
         log = (root / "host.log").open("w+")
         env = dict(os.environ, SSL_CERT_FILE=str(cert), GOMEMLIMIT="256MiB")
@@ -368,7 +369,7 @@ plugins:
 
         try:
             wait_for(lambda: ready("shadow"), "startup and quota discovery")
-            assert status()["version"] == "0.2.1"
+            assert status()["version"] == "0.3.0"
             assert status()["selection_policy"] == "weekly_reset_first"
             assert message() == "a-seven-days", "shadow changed built-in routing"
             assert status()["last_decision"]["auth_id"] == "z-five-hours.json"

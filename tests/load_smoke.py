@@ -140,7 +140,7 @@ def check_status(status, version):
     expected = {
         "version": version,
         "mode": "shadow",
-        "selection_policy": "weekly_reset_first",
+        "selection_policy": "quota_balanced",
         "accounts": {},
         "worker_failed": False,
     }

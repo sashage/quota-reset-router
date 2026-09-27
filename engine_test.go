@@ -206,6 +206,10 @@ func TestChooseEdgeCases(t *testing.T) {
 			if got := choose(req, states, testNow, 10*time.Minute); got.AuthID != tc.want {
 				t.Fatalf("got %+v, want %q", got, tc.want)
 			}
+			var rotation weightedRotation
+			if got := rotation.choose(req, states, testNow, 10*time.Minute); got.AuthID != tc.want {
+				t.Fatalf("balanced eligibility: got %+v, want %q", got, tc.want)
+			}
 		})
 	}
 }

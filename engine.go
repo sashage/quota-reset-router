@@ -32,23 +32,25 @@ type accountState struct {
 }
 
 type decision struct {
-	AuthID string `json:"auth_id,omitempty"`
-	Reason string `json:"reason"`
+	AuthID string             `json:"auth_id,omitempty"`
+	Reason string             `json:"reason"`
+	Shares map[string]float64 `json:"traffic_shares,omitempty"`
 }
 
 type engine struct {
-	host    authHost
-	fetcher quotaFetcher
-	cfg     config
-	now     func() time.Time
-	mu      sync.RWMutex
-	states  map[string]accountState
-	listErr string
-	last    decision
-	picks   atomic.Uint64
-	routed  atomic.Uint64
-	failed  atomic.Bool
-	refresh sync.Mutex
+	host     authHost
+	fetcher  quotaFetcher
+	cfg      config
+	now      func() time.Time
+	mu       sync.RWMutex
+	states   map[string]accountState
+	listErr  string
+	last     decision
+	picks    atomic.Uint64
+	routed   atomic.Uint64
+	failed   atomic.Bool
+	refresh  sync.Mutex
+	rotation weightedRotation // guarded by mu, like states and last
 }
 
 func newEngine(host authHost, fetcher quotaFetcher, cfg config) *engine {
@@ -219,15 +221,32 @@ func candidateIdentity(c pluginapi.SchedulerAuthCandidate) string {
 }
 
 func choose(req pluginapi.SchedulerPickRequest, states map[string]accountState, now time.Time, maxAge time.Duration) decision {
+	candidates, reason := eligibleCandidates(req, states, now, maxAge)
+	var best *pluginapi.SchedulerAuthCandidate
+	var reset time.Time
+	for i := range candidates {
+		c := &candidates[i]
+		r := *states[c.ID].Snapshot.Weekly.ResetsAt
+		if best == nil || r.Before(reset) || r.Equal(reset) && c.ID < best.ID {
+			best, reset = c, r
+		}
+	}
+	if best == nil {
+		return decision{Reason: reason}
+	}
+	return decision{AuthID: best.ID, Reason: "earliest_weekly_reset"}
+}
+
+// Both policies honor the same host eligibility, identity and priority rules.
+func eligibleCandidates(req pluginapi.SchedulerPickRequest, states map[string]accountState, now time.Time, maxAge time.Duration) ([]pluginapi.SchedulerAuthCandidate, string) {
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
 	if provider == "" && len(req.Providers) == 1 {
 		provider = strings.ToLower(strings.TrimSpace(req.Providers[0]))
 	}
 	if provider != "claude" && provider != "codex" || !providerOnly(req, provider) {
-		return decision{Reason: "provider_not_exclusively_supported"}
+		return nil, "provider_not_exclusively_supported"
 	}
-	var best *pluginapi.SchedulerAuthCandidate
-	var reset time.Time
+	var candidates []pluginapi.SchedulerAuthCandidate
 	for i := range req.Candidates {
 		c := &req.Candidates[i]
 		if c.ID == "" || strings.EqualFold(c.Status, "disabled") {
@@ -250,24 +269,27 @@ func choose(req pluginapi.SchedulerPickRequest, states map[string]accountState, 
 		if !r.After(now) {
 			continue
 		}
-		if best == nil || c.Priority > best.Priority || c.Priority == best.Priority && (r.Before(reset) || r.Equal(reset) && c.ID < best.ID) {
-			best, reset = c, r
+		if len(candidates) > 0 && c.Priority > candidates[0].Priority {
+			candidates = candidates[:0]
+		}
+		if len(candidates) == 0 || c.Priority == candidates[0].Priority {
+			candidates = append(candidates, *c)
 		}
 	}
-	if best == nil {
-		return decision{Reason: "no_known_usable_quota"}
-	}
-	return decision{AuthID: best.ID, Reason: "earliest_weekly_reset"}
+	return candidates, "no_known_usable_quota"
 }
 
 func (e *engine) pick(req pluginapi.SchedulerPickRequest) pluginapi.SchedulerPickResponse {
 	if e.failed.Load() {
 		return pluginapi.SchedulerPickResponse{}
 	}
-	e.mu.RLock()
-	d := choose(req, e.states, e.now(), e.cfg.MaxAge)
-	e.mu.RUnlock()
 	e.mu.Lock()
+	var d decision
+	if e.cfg.SelectionPolicy == "quota_balanced" {
+		d = e.rotation.choose(req, e.states, e.now(), e.cfg.MaxAge)
+	} else {
+		d = choose(req, e.states, e.now(), e.cfg.MaxAge)
+	}
 	e.last = d
 	e.mu.Unlock()
 	e.picks.Add(1)
@@ -297,5 +319,5 @@ func (e *engine) status() any {
 		Picks        uint64                  `json:"picks"`
 		Routed       uint64                  `json:"routed"`
 		WorkerFailed bool                    `json:"worker_failed"`
-	}{pluginVersion, "weekly_reset_first", e.cfg.Mode, e.cfg.PollInterval.String(), e.cfg.MaxAge.String(), accounts, e.listErr, e.last, e.picks.Load(), e.routed.Load(), e.failed.Load()}
+	}{pluginVersion, e.cfg.SelectionPolicy, e.cfg.Mode, e.cfg.PollInterval.String(), e.cfg.MaxAge.String(), accounts, e.listErr, e.last, e.picks.Load(), e.routed.Load(), e.failed.Load()}
 }

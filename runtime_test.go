@@ -27,6 +27,15 @@ func TestConfigValidation(t *testing.T) {
 	if cfg.Mode != "shadow" {
 		t.Fatal("default must not alter routing")
 	}
+	if cfg.SelectionPolicy != "quota_balanced" {
+		t.Fatal("default must balance quota")
+	}
+	if _, err := decodeConfig([]byte("selection_policy: wrong")); err == nil {
+		t.Fatal("invalid policy accepted")
+	}
+	if _, err := decodeConfig([]byte("selection_policy: weekly_reset_first")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func decodeEnvelope(t *testing.T, raw []byte, result any) pluginabi.Envelope {

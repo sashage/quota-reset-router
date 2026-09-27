@@ -1,6 +1,8 @@
 # quota-reset-router
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) scheduler plugin for Claude and Codex OAuth accounts. It routes each request to the eligible account whose **weekly quota resets soonest**, so quota that would otherwise expire unused is consumed first.
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) scheduler plugin for Claude and Codex OAuth accounts. This fork **balances requests using remaining quota and reset urgency**, favoring soon-to-expire quota while preserving multiple usable subscriptions for bursts and sustained demand.
+
+Fork: [sashage/quota-reset-router](https://github.com/sashage/quota-reset-router). Based on [WebDevCaptain/quota-reset-router](https://github.com/WebDevCaptain/quota-reset-router); the upstream `weekly_reset_first` policy remains available.
 
 - **Author:** Shreyash ([webdevcaptain](https://github.com/webdevcaptain))
 - **License:** [MIT](LICENSE)
@@ -10,13 +12,26 @@ A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) scheduler plugin f
 ## Selection rules
 
 - Claude and Codex pools are ranked independently. Requests spanning multiple providers are left to CLIProxyAPI.
-- **Rank:** earliest weekly reset first. Ties are ordered by credential ID.
+- **Default policy:** `quota_balanced` uses smooth weighted rotation on every request, including between quota polls. Accounts with more remaining quota and sooner weekly resets receive larger shares.
+- **Soft protection:** outside the final 24 hours, low weekly balances lose share more strongly. This protection eases continuously inside the final day. There is no hard reserve: one remaining usable account can serve all demand.
+- **Short/model windows:** low five-hour headroom reduces share; relevant Sonnet/Opus headroom also constrains the weekly balance used for scoring.
 - **Skip:** accounts whose five-hour, weekly, or model-specific (Sonnet/Opus) quota is exhausted.
-- Existing credential `priority` tiers still take precedence.
+- Existing credential `priority` tiers still take precedence. Use equal account priorities to balance all subscriptions together.
 - Only candidates offered by CLIProxyAPI are considered, so its model eligibility, cooldowns, and retries still apply.
 - Codex: the earliest reset among its weekly or monthly windows is used for ranking.
 
-Example: account A (weekly reset in 20 hours) is chosen over account B (weekly reset in 4 days), even if B's five-hour window resets in 2 hours. If A is exhausted, B is chosen.
+Example shares, with equal five-hour headroom and no model-specific constraint:
+
+| A remaining / resets in | B remaining / resets in | Approximate request share A / B |
+|---|---|---|
+| 80% / 2 days | 80% / 5 days | 80% / 20% |
+| 10% / 2 days | 80% / 5 days | 6% / 94% |
+| 80% / 6 hours | 100% / 7 days | 99% / 1% |
+| 2% / 3 days | 2% / 3 days | 50% / 50% |
+
+The heuristic uses `weight = remaining^exponent / hours^1.5 * short_remaining`, where remaining values are fractions, `hours = max(1, hours_until_weekly_reset)`, and `exponent = 1 + min(1, hours / 24)`. Relevant model-specific remaining quota caps `remaining`. Missing short-window data uses a factor of 1. Weights are normalized within the eligible highest-priority provider pool, then smooth weighted rotation distributes individual requests. Equal credits break ties by credential ID. Reconfiguration restarts rotation; shadow mode simulates the same rotation without routing.
+
+This is a request-share heuristic, not an optimal quota-spend guarantee: request costs differ, quota observations lag, and other clients may consume the same accounts. It assumes equal plan capacities per provider; percentages do not reveal absolute capacity on mixed plans. Short-window reset times enforce eligibility and trigger refreshes, but do not increase urgency weights. Use `selection_policy: weekly_reset_first` for the original strictly earliest-weekly-reset behavior.
 
 ## Quota polling
 
@@ -47,7 +62,7 @@ Ordering is not guaranteed in these cases. Quota can also change between refresh
 
 ## Install
 
-1. Download `quota-reset-router_<version>_<os>_<arch>.zip` for your platform from the [latest release](https://github.com/WebDevCaptain/quota-reset-router/releases/latest) and check it against `checksums.txt`. Optionally verify its build provenance: `gh attestation verify <zip> --repo WebDevCaptain/quota-reset-router`.
+1. Build this fork using the development instructions below, or obtain a release built from this fork. Upstream release binaries do not contain `quota_balanced`. For fork release archives, check `checksums.txt` and verify build provenance with `gh attestation verify <zip> --repo sashage/quota-reset-router`.
 2. Extract `quota-reset-router.so` (Linux), `quota-reset-router.dylib` (macOS), or `quota-reset-router.dll` (Windows) into CLIProxyAPI's plugin directory (`plugins.dir`) as a regular file. Symlinks are not loaded.
 3. Merge into `config.yaml`:
 
@@ -60,6 +75,7 @@ Ordering is not guaranteed in these cases. Quota can also change between refresh
          enabled: true
          priority: 10
          mode: shadow
+         selection_policy: quota_balanced
    ```
 
 4. Restart CLIProxyAPI.
@@ -67,11 +83,14 @@ Ordering is not guaranteed in these cases. Quota can also change between refresh
 
 `priority` orders plugins, not accounts. CLIProxyAPI consults only the highest-priority scheduler plugin.
 
+This fork retains the `quota-reset-router` plugin ID. An update from the upstream plugin-store entry can replace the fork with upstream behavior; use fork-built artifacts when upgrading.
+
 ## Configuration
 
 | Key | Default | Allowed | Purpose |
 |---|---|---|---|
 | `mode` | `shadow` | `shadow`, `active` | `shadow` records proposed choices only. `active` routes requests. |
+| `selection_policy` | `quota_balanced` | `quota_balanced`, `weekly_reset_first` | Balance headroom and reset urgency, or use the upstream policy. |
 | `poll_interval` | `5m` | `1m` to `1h` | Quota refresh interval. |
 | `max_age` | `10m` | `poll_interval` to `1h` | Maximum age of cached quota. |
 | `request_timeout` | `10s` | `1s` to `30s` | Timeout per quota request. |
@@ -89,7 +108,7 @@ PATCH /v0/management/plugins/quota-reset-router/config
 GET /v0/management/plugins/quota-reset-router/status
 ```
 
-Requires Management API authentication. Returns the version, mode, selection policy, per-account quota snapshots, refresh errors, the last decision, and routing counters. Credential IDs are included (often file names containing email addresses). OAuth tokens are not.
+Requires Management API authentication. Returns the version, mode, selection policy, per-account quota snapshots, refresh errors, the last decision, and routing counters. In balanced mode, `last_decision.traffic_shares` records the normalized target shares for that decision's eligible accounts (fractions, not observed usage). Credential IDs are included (often file names containing email addresses). OAuth tokens are not.
 
 ## Disable or upgrade
 

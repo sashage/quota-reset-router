@@ -134,8 +134,9 @@ func registration() any {
 		Capabilities  map[string]bool    `json:"capabilities"`
 	}{
 		pluginabi.SchemaVersion,
-		pluginapi.Metadata{Name: pluginID, Version: pluginVersion, Author: "Shreyash (webdevcaptain)", GitHubRepository: "https://github.com/webdevcaptain/quota-reset-router", ConfigFields: []pluginapi.ConfigField{
-			{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"shadow", "active"}, Description: "Shadow records decisions without changing routing. Active selects the earliest weekly reset."},
+		pluginapi.Metadata{Name: pluginID, Version: pluginVersion, Author: "Shreyash (webdevcaptain); sashage fork", GitHubRepository: "https://github.com/sashage/quota-reset-router", ConfigFields: []pluginapi.ConfigField{
+			{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"shadow", "active"}, Description: "Shadow records decisions without changing routing. Active applies the selection policy."},
+			{Name: "selection_policy", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"quota_balanced", "weekly_reset_first"}, Description: "Default quota_balanced spreads requests using quota headroom and reset urgency. weekly_reset_first preserves upstream behavior."},
 			{Name: "poll_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Quota refresh interval, 1m to 1h. Default 5m."},
 			{Name: "max_age", Type: pluginapi.ConfigFieldTypeString, Description: "Maximum quota cache age. Default 10m."},
 			{Name: "request_timeout", Type: pluginapi.ConfigFieldTypeString, Description: "Background quota request timeout, 1s to 30s. Default 10s."},
